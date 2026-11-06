@@ -5,6 +5,6 @@
 // Google "Web application" OAuth Client ID from the Google Cloud project
 // "Phantom Scanner" (Google Auth Platform -> Clients). Paste it between the quotes.
 // This is a public identifier, not a secret.
-export const GOOGLE_CLIENT_ID = '';
+export const GOOGLE_CLIENT_ID = '754042438332-rqlr9paqebtfbvjis08pd5eni7iub9j8.apps.googleusercontent.com';
 
 export const APP_VERSION = '1.7.3';
