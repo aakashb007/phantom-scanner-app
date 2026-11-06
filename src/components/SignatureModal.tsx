@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { PenTool, Check, X, RotateCcw, Move, Sliders } from 'lucide-react';
 import { triggerHaptic } from '../utils/haptics';
+import { getSavedSignatures, addSignature, trimCanvas } from '../utils/signatures';
 
 interface SignatureModalProps {
   isOpen: boolean;
@@ -31,8 +32,11 @@ export const SignatureModal: React.FC<SignatureModalProps> = ({
   const pageContainerRef = useRef<HTMLDivElement | null>(null);
   const isDrawingRef = useRef<boolean>(false);
 
+  const [savedSigs, setSavedSigs] = useState<string[]>([]);
+
   useEffect(() => {
     if (isOpen) {
+      getSavedSignatures().then(setSavedSigs);
       setStep('draw');
       setSignatureDataUrl(null);
       setPos({ x: 50, y: 70 });
@@ -49,9 +53,10 @@ export const SignatureModal: React.FC<SignatureModalProps> = ({
     if (!ctx) return;
 
     isDrawingRef.current = true;
+    canvas.setPointerCapture?.(e.pointerId);
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = ((e.clientX - rect.left) * canvas.width) / rect.width;
+    const y = ((e.clientY - rect.top) * canvas.height) / rect.height;
 
     ctx.beginPath();
     ctx.moveTo(x, y);
@@ -69,8 +74,8 @@ export const SignatureModal: React.FC<SignatureModalProps> = ({
     if (!ctx) return;
 
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = ((e.clientX - rect.left) * canvas.width) / rect.width;
+    const y = ((e.clientY - rect.top) * canvas.height) / rect.height;
     ctx.lineTo(x, y);
     ctx.stroke();
   };
@@ -127,7 +132,10 @@ export const SignatureModal: React.FC<SignatureModalProps> = ({
     const canvas = drawCanvasRef.current;
     if (!canvas) return;
     triggerHaptic('light');
-    const dataUrl = canvas.toDataURL('image/png');
+    const trimmed = trimCanvas(canvas);
+    if (!trimmed) return;
+    const dataUrl = trimmed.toDataURL('image/png');
+    addSignature(dataUrl); // remember it for next time
     setSignatureDataUrl(dataUrl);
     setStep('place');
   };
@@ -242,6 +250,28 @@ export const SignatureModal: React.FC<SignatureModalProps> = ({
       {/* Step 1: Draw Signature Canvas */}
       {step === 'draw' && (
         <div className="flex-1 flex flex-col items-center justify-center p-6 bg-[#0B0B10]">
+          {savedSigs.length > 0 && (
+            <div className="w-full max-w-lg mb-4">
+              <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block mb-2">
+                Saved signatures
+              </span>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {savedSigs.map((sig, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      triggerHaptic('light');
+                      setSignatureDataUrl(sig);
+                      setStep('place');
+                    }}
+                    className="shrink-0 h-16 w-32 bg-white rounded-xl p-1.5 ios-press flex items-center justify-center"
+                  >
+                    <img src={sig} alt={`Saved signature ${i + 1}`} className="max-h-full max-w-full object-contain" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div className="w-full max-w-lg bg-white rounded-3xl p-4 shadow-2xl relative">
             <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider block mb-2 text-center">
               Sign inside the box below

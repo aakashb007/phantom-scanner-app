@@ -3,12 +3,14 @@ import { Lock, Unlock, Shield, KeyRound, Plus, FileText } from 'lucide-react';
 import { DocumentRecord } from '../types/document';
 import { DocumentCard } from './DocumentCard';
 import { triggerHaptic } from '../utils/haptics';
+import { LockScreen } from './LockScreen';
 
 interface VaultScreenProps {
   documents: DocumentRecord[];
   onOpenDocument: (doc: DocumentRecord) => void;
   onContextMenu: (e: React.MouseEvent, doc: DocumentRecord) => void;
   onScanToVault: () => void;
+  onBack?: () => void;
 }
 
 export const VaultScreen: React.FC<VaultScreenProps> = ({
@@ -16,9 +18,22 @@ export const VaultScreen: React.FC<VaultScreenProps> = ({
   onOpenDocument,
   onContextMenu,
   onScanToVault,
+  onBack,
 }) => {
-  const [isUnlocked, setIsUnlocked] = useState<boolean>(true);
+  // The Vault locks again every time you leave it.
+  const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
   const vaultDocs = documents.filter((d) => d.vault);
+
+  if (!isUnlocked) {
+    return (
+      <LockScreen
+        title="Phantom Vault"
+        subtitle="Unlock with Face ID, fingerprint or your PIN"
+        onUnlock={() => setIsUnlocked(true)}
+        onCancel={onBack}
+      />
+    );
+  }
 
   return (
     <div className="flex-1 overflow-y-auto ios-scroll pb-24 p-4 sm:p-6 select-none">

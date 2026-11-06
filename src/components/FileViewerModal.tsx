@@ -24,7 +24,7 @@ import {
   ArrowDown,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import * as pdfjsLib from 'pdfjs-dist';
+import { pdfjsLib } from '../utils/pdfjsSetup';
 import { renderAsync as renderDocx } from 'docx-preview';
 import {
   SupportedFileType,
@@ -44,10 +44,6 @@ import { PdfToolsModal } from './PdfToolsModal';
 import { shareOrDownloadFiles } from '../utils/exportEngine';
 import { recognizeImageText } from '../utils/tesseractOcr';
 
-// Configure pdfjs worker to matching version
-if (typeof window !== 'undefined') {
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-}
 
 interface FileViewerModalProps {
   isOpen: boolean;
@@ -99,6 +95,19 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
   const [pdfPageImages, setPdfPageImages] = useState<string[]>([]);
   const [isPdfLoading, setIsPdfLoading] = useState<boolean>(false);
   const pdfCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const viewerMainRef = useRef<HTMLElement | null>(null);
+  const [viewerSize, setViewerSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
+
+  // Track the viewer area size so pages fit the screen
+  useEffect(() => {
+    const el = viewerMainRef.current;
+    if (!el) return;
+    const update = () => setViewerSize({ w: el.clientWidth, h: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const pdfTextLayerRef = useRef<Record<number, string>>({});
 
   // Office Document States
@@ -249,16 +258,21 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
         if (!isMounted) return;
 
         const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
-        const scale = (isDesktop ? 1.6 : 1.2) * zoomLevel * dpr;
-        const viewport = page.getViewport({ scale });
+        const base = page.getViewport({ scale: 1 });
+        const availW = Math.max(200, (viewerSize.w || window.innerWidth) - 32);
+        const availH = Math.max(200, (viewerSize.h || window.innerHeight) - 32);
+        // Phone: fit the page width. Desktop: fit the whole page in the window.
+        const fit = isDesktop ? Math.min(availW / base.width, availH / base.height) : availW / base.width;
+        const cssScale = fit * zoomLevel;
+        const viewport = page.getViewport({ scale: cssScale * dpr });
 
         const canvas = pdfCanvasRef.current;
         if (!canvas) return;
 
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvas.style.width = `${viewport.width / dpr}px`;
-        canvas.style.height = `${viewport.height / dpr}px`;
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+        canvas.style.width = `${Math.floor(base.width * cssScale)}px`;
+        canvas.style.height = `${Math.floor(base.height * cssScale)}px`;
 
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
@@ -285,7 +299,7 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [pdfDocProxy, currentPage, zoomLevel, isDesktop, fileRecord.type]);
+  }, [pdfDocProxy, currentPage, zoomLevel, isDesktop, fileRecord.type, viewerSize.w, viewerSize.h]);
 
   // ==========================================
   // 2. WORD (.docx) RENDERING (docx-preview)
@@ -681,14 +695,15 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
 
       {/* MAIN VIEWER CANVAS / CONTENT */}
       <main
+        ref={viewerMainRef}
         onDoubleClick={handleDoubleTap}
-        className={`flex-1 relative flex items-center justify-center overflow-auto p-4 transition-colors ${
+        className={`flex-1 relative flex overflow-auto p-4 transition-colors ${
           isNightMode ? 'bg-[#0B0B10] invert hue-rotate-180' : 'bg-[#E5E5EA]/40 dark:bg-[#000000]'
         }`}
       >
         {/* PDF VIEW */}
         {fileRecord.type === 'pdf' && (
-          <div className="relative flex items-center justify-center max-w-full max-h-full">
+          <div className="relative m-auto flex items-center justify-center shrink-0">
             {isPdfLoading && (
               <div className="flex flex-col items-center gap-2 text-gray-400">
                 <Loader2 className="w-8 h-8 animate-spin text-[#5856D6]" />
@@ -698,13 +713,7 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
 
             <canvas
               ref={pdfCanvasRef}
-              className={`rounded-xl shadow-2xl transition-transform ${
-                isPdfLoading ? 'hidden' : 'block'
-              }`}
-              style={{
-                transform: `scale(${zoomLevel}) translate(${panPos.x}px, ${panPos.y}px)`,
-                transformOrigin: 'center center',
-              }}
+              className={`rounded-xl shadow-2xl bg-white ${isPdfLoading ? 'hidden' : 'block'}`}
             />
           </div>
         )}
@@ -921,7 +930,7 @@ export const FileViewerModal: React.FC<FileViewerModalProps> = ({
 
             {/* Zoom Out */}
             <button
-              onClick={() => setZoomLevel((z) => Math.max(1, z - 0.25))}
+              onClick={() => setZoomLevel((z) => Math.max(0.5, +(z - 0.25).toFixed(2)))}
               className="p-1 rounded-full hover:bg-white/20 ios-press"
             >
               <ZoomOut className="w-3.5 h-3.5" />

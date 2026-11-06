@@ -42,7 +42,7 @@ export interface DeletedDocRecord {
 
 export type ThemeMode = 'system' | 'light' | 'dark';
 
-export type ActiveTab = 'files' | 'scan' | 'tools';
+export type ActiveTab = 'files' | 'scan' | 'tools' | 'settings' | 'vault';
 export type DesktopSection = 'documents' | 'folders' | 'vault' | 'tools' | 'settings';
 
 export interface SearchMatchResult {

@@ -7,6 +7,49 @@ const SETTINGS_STORE = 'settings';
 const DELETED_STORE = 'deleted_docs';
 const RECENT_FILES_STORE = 'recent_files';
 
+// Fired whenever the user changes documents, so Google Drive sync can run ~5 minutes later.
+export const DOCS_CHANGED_EVENT = 'phantom:docs-changed';
+let suppressChangeEvents = 0;
+function notifyDocsChanged() {
+  if (suppressChangeEvents > 0) return;
+  try {
+    window.dispatchEvent(new Event(DOCS_CHANGED_EVENT));
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Run DB writes (e.g. from sync) without scheduling another sync. */
+export async function withoutChangeEvents<T>(fn: () => Promise<T>): Promise<T> {
+  suppressChangeEvents++;
+  try {
+    return await fn();
+  } finally {
+    suppressChangeEvents--;
+  }
+}
+
+export async function removeDeletedDocRecord(docId: string): Promise<void> {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DELETED_STORE, 'readwrite');
+    tx.objectStore(DELETED_STORE).delete(docId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/** Delete a document locally because it was deleted on another device (not recorded for upload). */
+export async function deleteDocumentLocalOnly(docId: string): Promise<void> {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(DOCS_STORE, 'readwrite');
+    tx.objectStore(DOCS_STORE).delete(docId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 function openDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -80,7 +123,10 @@ export async function saveDocument(doc: DocumentRecord): Promise<void> {
       lastChanged: doc.lastChanged || Date.now(),
     };
     const request = store.put(docToSave);
-    request.onsuccess = () => resolve();
+    request.onsuccess = () => {
+      notifyDocsChanged();
+      resolve();
+    };
     request.onerror = () => reject(request.error);
   });
 }
@@ -128,7 +174,10 @@ export async function deleteDocument(docId: string, name?: string): Promise<void
     const tx = db.transaction(DOCS_STORE, 'readwrite');
     const store = tx.objectStore(DOCS_STORE);
     const request = store.delete(docId);
-    request.onsuccess = () => resolve();
+    request.onsuccess = () => {
+      notifyDocsChanged();
+      resolve();
+    };
     request.onerror = () => reject(request.error);
   });
 }
@@ -144,7 +193,10 @@ export async function deleteDocuments(docIds: string[]): Promise<void> {
     const tx = db.transaction(DOCS_STORE, 'readwrite');
     const store = tx.objectStore(DOCS_STORE);
     docIds.forEach((id) => store.delete(id));
-    tx.oncomplete = () => resolve();
+    tx.oncomplete = () => {
+      notifyDocsChanged();
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 }
@@ -158,6 +210,15 @@ export async function updateDocument(docId: string, updates: Partial<DocumentRec
     lastChanged: Date.now(), // always updates lastChanged
   };
   await saveDocument(updated);
+  return updated;
+}
+
+/** Update fields that are NOT synced (e.g. OCR text) without changing lastChanged or scheduling a sync. */
+export async function updateDocumentSilently(docId: string, updates: Partial<DocumentRecord>): Promise<DocumentRecord | null> {
+  const existing = await getDocument(docId);
+  if (!existing) return null;
+  const updated: DocumentRecord = { ...existing, ...updates, lastChanged: existing.lastChanged };
+  await withoutChangeEvents(() => saveDocument(updated));
   return updated;
 }
 

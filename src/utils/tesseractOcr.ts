@@ -1,6 +1,6 @@
 import { createWorker } from 'tesseract.js';
 import { DocumentRecord, OcrWordBox } from '../types/document';
-import { getDocument, updateDocument, getSetting } from '../db/db';
+import { getDocument, updateDocument, updateDocumentSilently, getSetting } from '../db/db';
 
 let ocrWorkerPromise: Promise<Tesseract.Worker> | null = null;
 
@@ -39,7 +39,8 @@ export function extractSmartTitle(ocrText: string): string | null {
  */
 export async function runBackgroundOcr(
   docId: string,
-  onComplete?: (updatedDoc: DocumentRecord) => void
+  onComplete?: (updatedDoc: DocumentRecord) => void,
+  allowRename: boolean = true
 ): Promise<void> {
   try {
     const doc = await getDocument(docId);
@@ -101,7 +102,7 @@ export async function runBackgroundOcr(
     const isSmartNamingEnabled = await getSetting<boolean>('smart_naming', true);
     let newDocName = doc.name;
 
-    if (isSmartNamingEnabled && firstPageOcrText) {
+    if (allowRename && isSmartNamingEnabled && firstPageOcrText) {
       const smartTitle = extractSmartTitle(firstPageOcrText);
       // Only replace if document still has default "Scan " name
       if (smartTitle && doc.name.startsWith('Scan ')) {
@@ -111,10 +112,18 @@ export async function runBackgroundOcr(
     }
 
     if (hasUpdates) {
-      const updated = await updateDocument(doc.docId, {
-        pages: updatedPages,
-        name: newDocName,
+      // OCR text is not synced, so it must not change lastChanged. Only a smart rename counts as an edit.
+      const latest = await getDocument(doc.docId);
+      const mergedPages = (latest?.pages || updatedPages).map((p) => {
+        const o = updatedPages.find((u) => u.id === p.id);
+        return o && o.ocrText !== undefined && p.dataUrl === o.dataUrl
+          ? { ...p, ocrText: o.ocrText, ocrWords: o.ocrWords }
+          : p;
       });
+      const updated =
+        newDocName !== doc.name
+          ? await updateDocument(doc.docId, { pages: mergedPages, name: newDocName })
+          : await updateDocumentSilently(doc.docId, { pages: mergedPages });
 
       if (updated && onComplete) {
         onComplete(updated);

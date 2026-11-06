@@ -49,6 +49,9 @@ import { FoldersScreen } from './components/FoldersScreen';
 import { ToolsScreen } from './components/ToolsScreen';
 import { ExpiringSoonBanner } from './components/ExpiringSoonBanner';
 import { FilesSheetModal } from './components/FilesSheetModal';
+import { AskAIModal } from './components/AskAIModal';
+import { LockScreen } from './components/LockScreen';
+import { initDriveSync } from './sync/driveSync';
 import { FileViewerModal } from './components/FileViewerModal';
 import { detectFileType } from './utils/fileParser';
 import { IOSAlert } from './components/ui/IOSAlert';
@@ -71,6 +74,9 @@ function PhantomScannerApp() {
   // Groq API Key state (controls visibility of ✨ Ask AI)
   const [groqKey, setGroqKey] = useState<string>('');
   const [showAskAIModal, setShowAskAIModal] = useState<boolean>(false);
+  const [askAIQuestion, setAskAIQuestion] = useState<string>('');
+  const [expiryRemindersOn, setExpiryRemindersOn] = useState<boolean>(true);
+  const [isAppLocked, setIsAppLocked] = useState<boolean>(false);
 
   // Selection mode for batch actions (ordered array to preserve exact selection sequence)
   const [isSelectionMode, setIsSelectionMode] = useState<boolean>(false);
@@ -124,6 +130,7 @@ function PhantomScannerApp() {
       setDocuments(docs);
       const savedGroq = await getSetting<string>('groq_api_key', '');
       setGroqKey(savedGroq || '');
+      setExpiryRemindersOn(await getSetting<boolean>('expiry_reminders', true));
     } catch (err) {
       console.error('Failed to load documents:', err);
     }
@@ -132,6 +139,25 @@ function PhantomScannerApp() {
   useEffect(() => {
     refreshDocuments();
   }, [refreshDocuments]);
+
+  // Google Drive sync: on start, ~5 min after changes, and on "Sync Now"
+  useEffect(() => {
+    initDriveSync(() => refreshDocuments());
+  }, [refreshDocuments]);
+
+  // App Lock: lock on open, and again after a minute away
+  useEffect(() => {
+    let hiddenAt = 0;
+    getSetting<boolean>('app_lock', false).then((on) => on && setIsAppLocked(true));
+    const onVis = async () => {
+      if (document.visibilityState === 'hidden') hiddenAt = Date.now();
+      else if (hiddenAt && Date.now() - hiddenAt > 60_000 && (await getSetting<boolean>('app_lock', false))) {
+        setIsAppLocked(true);
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
 
   // Global Keyboard Shortcuts (Desktop habits)
   useEffect(() => {
@@ -463,10 +489,11 @@ function PhantomScannerApp() {
       <AnimatePresence>
         {showIOSTip && (
           <motion.div
-            initial={{ y: -60, opacity: 0 }}
+            initial={{ y: 60, opacity: 0 }}
             animate={{ y: 0, opacity: 1 }}
-            exit={{ y: -60, opacity: 0 }}
-            className="fixed top-0 inset-x-0 z-50 pt-safe px-4 pb-2 bg-[#5856D6] text-white shadow-lg flex items-center justify-between text-xs"
+            exit={{ y: 60, opacity: 0 }}
+            style={{ bottom: 'calc(env(safe-area-inset-bottom) + 96px)' }}
+            className="fixed inset-x-3 z-50 px-4 py-2.5 rounded-2xl bg-[#5856D6] text-white shadow-lg flex items-center justify-between text-xs"
           >
             <div className="flex items-center gap-2">
               <Share2 className="w-4 h-4 shrink-0" />
@@ -652,6 +679,7 @@ function PhantomScannerApp() {
                   <button
                     onClick={() => {
                       triggerHaptic('light');
+                      setAskAIQuestion('');
                       setShowAskAIModal(true);
                     }}
                     className="ios-press flex items-center gap-1 px-3 py-1.5 rounded-full bg-gradient-to-r from-purple-500 to-indigo-500 text-white text-xs font-semibold shadow-xs"
@@ -713,7 +741,7 @@ function PhantomScannerApp() {
                     if (isDesktop) {
                       setDesktopSection('settings');
                     } else {
-                      setActiveTab('tools');
+                      setActiveTab('settings');
                     }
                   }}
                   className="p-2 rounded-full bg-white dark:bg-[#1C1C1E] text-gray-700 dark:text-gray-300 shadow-xs hover:bg-gray-100 dark:hover:bg-[#2C2C2E] ios-press"
@@ -892,7 +920,7 @@ function PhantomScannerApp() {
             {desktopSection === 'documents' && (
               <div className="flex-1 overflow-y-auto ios-scroll p-4 sm:p-6 pb-12">
                 {/* Expiring Soon Banner & Drawer */}
-                {!searchQuery.trim() && (
+                {!searchQuery.trim() && expiryRemindersOn && (
                   <ExpiringSoonBanner
                     documents={homeDocuments}
                     onOpenDocument={(doc) => {
@@ -919,6 +947,19 @@ function PhantomScannerApp() {
                         Clear Search
                       </button>
                     </div>
+
+                    {groqKey.trim() !== '' && (
+                      <button
+                        onClick={() => {
+                          setAskAIQuestion(searchQuery.trim());
+                          setShowAskAIModal(true);
+                        }}
+                        className="w-full mb-3 flex items-center gap-2 px-4 py-3 rounded-xl bg-[#FF9500]/10 text-[#C76A00] dark:text-[#FFB340] text-sm font-semibold text-left ios-press"
+                      >
+                        <span>✨</span>
+                        <span className="truncate">Ask AI about &quot;{searchQuery.trim()}&quot;</span>
+                      </button>
+                    )}
 
                     {ocrSearchResults.length === 0 ? (
                       <div className="text-center py-16 text-gray-400">
@@ -1066,6 +1107,8 @@ function PhantomScannerApp() {
                   setActiveViewerPageIndex(0);
                   setActiveViewerHighlight('');
                 }}
+                onOpenPdfToolkit={() => setIsFilesSheetOpen(true)}
+                onOpenVault={() => setDesktopSection('vault')}
               />
             )}
 
@@ -1079,7 +1122,7 @@ function PhantomScannerApp() {
             {activeTab === 'files' && (
               <div className="flex-1 overflow-y-auto ios-scroll p-4 pb-28">
                 {/* Expiring Soon Banner & Drawer */}
-                {!searchQuery.trim() && (
+                {!searchQuery.trim() && expiryRemindersOn && (
                   <ExpiringSoonBanner
                     documents={homeDocuments}
                     onOpenDocument={(doc) => {
@@ -1096,6 +1139,19 @@ function PhantomScannerApp() {
                     <div className="mb-2 text-xs text-gray-500 dark:text-gray-400">
                       {ocrSearchResults.length} matches for &quot;{searchQuery}&quot;
                     </div>
+
+                    {groqKey.trim() !== '' && (
+                      <button
+                        onClick={() => {
+                          setAskAIQuestion(searchQuery.trim());
+                          setShowAskAIModal(true);
+                        }}
+                        className="w-full mb-3 flex items-center gap-2 px-4 py-3 rounded-xl bg-[#FF9500]/10 text-[#C76A00] dark:text-[#FFB340] text-sm font-semibold text-left ios-press"
+                      >
+                        <span>✨</span>
+                        <span className="truncate">Ask AI about &quot;{searchQuery.trim()}&quot;</span>
+                      </button>
+                    )}
                     {ocrSearchResults.map((result, idx) => {
                       const firstPage = result.doc.pages[result.pageIndex] || result.doc.pages[0];
                       return (
@@ -1184,7 +1240,37 @@ function PhantomScannerApp() {
             )}
 
             {activeTab === 'tools' && (
+              <ToolsScreen
+                documents={homeDocuments}
+                onOpenDocument={(doc) => {
+                  setActiveDocument(doc);
+                  setActiveViewerPageIndex(0);
+                  setActiveViewerHighlight('');
+                }}
+                onOpenPdfToolkit={() => setIsFilesSheetOpen(true)}
+                onOpenVault={() => setActiveTab('vault')}
+              />
+            )}
+
+            {activeTab === 'settings' && (
               <SettingsScreen onRefreshDocs={refreshDocuments} />
+            )}
+
+            {activeTab === 'vault' && (
+              <VaultScreen
+                documents={documents}
+                onOpenDocument={(doc) => {
+                  setActiveDocument(doc);
+                  setActiveViewerPageIndex(0);
+                  setActiveViewerHighlight('');
+                }}
+                onContextMenu={handleContextMenu}
+                onScanToVault={() => {
+                  setScanInitialVault(true);
+                  setIsScannerOpen(true);
+                }}
+                onBack={() => setActiveTab('tools')}
+              />
             )}
           </>
         )}
@@ -1499,21 +1585,24 @@ function PhantomScannerApp() {
         ]}
       />
 
-      {/* Ask AI Information Dialog */}
-      <IOSAlert
+      {/* ✨ Ask AI (Groq, user's own key) */}
+      <AskAIModal
         isOpen={showAskAIModal}
+        initialQuestion={askAIQuestion}
+        documents={homeDocuments}
         onClose={() => setShowAskAIModal(false)}
-        title="✨ Ask AI Active"
-        description="Your Groq API key is connected. You can query document text and run smart summaries."
-        buttons={[
-          {
-            label: 'Done',
-            onClick: () => setShowAskAIModal(false),
-            variant: 'default',
-            isBold: true,
-          },
-        ]}
+        onOpenDocument={(doc) => {
+          setShowAskAIModal(false);
+          setActiveDocument(doc);
+          setActiveViewerPageIndex(0);
+          setActiveViewerHighlight('');
+        }}
       />
+
+      {/* App Lock */}
+      {isAppLocked && (
+        <LockScreen fullScreen title="Phantom Scanner is locked" subtitle="Unlock with Face ID, fingerprint or your PIN" onUnlock={() => setIsAppLocked(false)} />
+      )}
     </div>
   );
 }
