@@ -55,6 +55,10 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          // A new version takes over immediately (no waiting for every tab/app window to close).
+          skipWaiting: true,
+          clientsClaim: true,
+          cleanupOutdatedCaches: true,
           globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
           maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         },
