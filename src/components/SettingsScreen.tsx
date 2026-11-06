@@ -383,6 +383,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onRefreshDocs })
           <div>
             <p className="text-[17px] font-semibold text-gray-900 dark:text-white">Phantom Scanner</p>
             <p className="text-xs text-gray-500">Version {APP_VERSION} · Built by Aakash Saleem</p>
+            <p className="text-[11px] text-gray-400">Update {__BUILD_TIME__} UTC</p>
           </div>
         </div>
         <div className="px-4 py-3 text-[13px] text-gray-600 dark:text-gray-300 space-y-1.5">

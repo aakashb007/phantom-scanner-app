@@ -12,7 +12,7 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        injectRegister: 'auto',
+        injectRegister: false, // registered in src/main.tsx (auto-update + reload)
         devOptions: {
           enabled: false,
         },
@@ -60,6 +60,9 @@ export default defineConfig(() => {
         },
       }),
     ],
+    define: {
+      __BUILD_TIME__: JSON.stringify(new Date().toISOString().slice(0, 16).replace('T', ' ')),
+    },
     resolve: {
       alias: {
         '@': path.resolve('.'),
