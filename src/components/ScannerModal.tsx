@@ -13,6 +13,9 @@ import {
   RefreshCw,
   Sliders,
   Sparkles,
+  Zap,
+  ZapOff,
+  Aperture,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { DocumentPage, DocumentRecord } from '../types/document';
@@ -35,6 +38,40 @@ interface ScannerModalProps {
   onClose: () => void;
   onDocumentCreated: (doc: DocumentRecord) => void;
   initialVault?: boolean;
+}
+
+// iPhone/iPad Safari cannot use the flash (torch) or the full-resolution photo mode from a web page's
+// live video. So on iOS the shutter opens the real iPhone Camera (full resolution, flash, focus),
+// and the photo comes straight back into the scan.
+const IS_IOS =
+  typeof navigator !== 'undefined' &&
+  (/iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && (navigator as any).maxTouchPoints > 1));
+const IS_TOUCH = typeof window !== 'undefined' && ('ontouchstart' in window || navigator.maxTouchPoints > 0);
+
+/** Keep camera photos sharp but manageable: longest side up to 4000 px (4K class), JPEG 92%. */
+async function fileToScanCanvas(file: Blob): Promise<HTMLCanvasElement> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('Could not read the photo'));
+      i.src = url;
+    });
+    const w0 = img.naturalWidth || img.width;
+    const h0 = img.naturalHeight || img.height;
+    const k = Math.min(1, 4000 / Math.max(w0, h0));
+    const c = document.createElement('canvas');
+    c.width = Math.round(w0 * k);
+    c.height = Math.round(h0 * k);
+    const ctx = c.getContext('2d')!;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, c.width, c.height);
+    return c;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export const ScannerModal: React.FC<ScannerModalProps> = ({
@@ -65,23 +102,46 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const hdCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const [torchSupported, setTorchSupported] = useState<boolean>(false);
+  const [torchOn, setTorchOn] = useState<boolean>(false);
+  const [isProcessingPhoto, setIsProcessingPhoto] = useState<boolean>(false);
+  // iPhone/iPad: always use the native camera (HD + flash). Elsewhere: live camera preview.
+  const useNativeCamera = IS_IOS;
 
   const startCamera = useCallback(async () => {
     try {
       if (stream) {
         stream.getTracks().forEach((track) => track.stop());
       }
+      if (useNativeCamera) {
+        setHasCamera(true);
+        return;
+      }
       const constraints: MediaStreamConstraints = {
         video: {
           facingMode: { ideal: facingMode },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
+          // Ask for the highest resolution the camera can give (4K class)
+          width: { ideal: 4096 },
+          height: { ideal: 3072 },
         },
         audio: false,
       };
       const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       setStream(mediaStream);
       setHasCamera(true);
+      const track = mediaStream.getVideoTracks()[0];
+      const caps: any = track?.getCapabilities?.() || {};
+      setTorchSupported(!!caps.torch);
+      setTorchOn(false);
+      try {
+        // Continuous autofocus where supported keeps text sharp
+        if (caps.focusMode?.includes?.('continuous')) {
+          await track.applyConstraints({ advanced: [{ focusMode: 'continuous' } as any] });
+        }
+      } catch {
+        /* optional */
+      }
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
       }
@@ -120,11 +180,41 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   }, [stream]);
 
   // Capture frame from video
-  const capturePhoto = () => {
+  const toggleTorch = async () => {
+    const track = stream?.getVideoTracks()[0];
+    if (!track) return;
+    try {
+      await track.applyConstraints({ advanced: [{ torch: !torchOn } as any] });
+      setTorchOn(!torchOn);
+      triggerHaptic('light');
+    } catch {
+      setTorchSupported(false);
+    }
+  };
+
+  const capturePhoto = async () => {
+    if (useNativeCamera) {
+      triggerHaptic('light');
+      hdCameraInputRef.current?.click();
+      return;
+    }
     if (!videoRef.current) return;
     triggerHaptic('medium');
     setIsCapturingFlash(true);
     setTimeout(() => setIsCapturingFlash(false), 120);
+
+    // Prefer a real full-resolution still photo (ImageCapture), not a video frame.
+    const track = stream?.getVideoTracks()[0];
+    const IC = (window as any).ImageCapture;
+    if (track && IC) {
+      try {
+        const blob: Blob = await new IC(track).takePhoto(torchOn ? { fillLightMode: 'flash' } : {});
+        addCanvasAsPage(await fileToScanCanvas(blob));
+        return;
+      } catch {
+        /* fall back to the video frame */
+      }
+    }
 
     const video = videoRef.current;
     const canvas = document.createElement('canvas');
@@ -134,6 +224,26 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     if (!ctx) return;
 
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    addCanvasAsPage(canvas);
+  };
+
+  /** Photo from the native camera (iPhone Camera app / Android camera): full resolution. */
+  const handleHdCameraPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setIsProcessingPhoto(true);
+    try {
+      triggerHaptic('medium');
+      addCanvasAsPage(await fileToScanCanvas(file));
+    } catch (err) {
+      console.warn(err);
+    } finally {
+      setIsProcessingPhoto(false);
+    }
+  };
+
+  const addCanvasAsPage = (canvas: HTMLCanvasElement) => {
 
     // 1. Detect corners
     const detectedCorners = detectDocumentCorners(canvas);
@@ -351,7 +461,27 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
         </button>
 
         <div className="flex items-center gap-2">
-          {hasCamera && (
+          {!useNativeCamera && torchSupported && (
+            <button
+              onClick={toggleTorch}
+              className={`p-2 rounded-full ios-press ${torchOn ? 'bg-yellow-400 text-black' : 'bg-white/15 hover:bg-white/25 text-white'}`}
+              title={torchOn ? 'Flash off' : 'Flash on'}
+              aria-label="Flash"
+            >
+              {torchOn ? <Zap className="w-4 h-4" /> : <ZapOff className="w-4 h-4" />}
+            </button>
+          )}
+          {!useNativeCamera && IS_TOUCH && (
+            <button
+              onClick={() => hdCameraInputRef.current?.click()}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-full bg-white/15 hover:bg-white/25 text-white text-xs font-semibold ios-press"
+              title="Open the phone's own camera (full resolution and flash)"
+            >
+              <Aperture className="w-3.5 h-3.5" />
+              <span>HD</span>
+            </button>
+          )}
+          {hasCamera && !useNativeCamera && (
             <button
               onClick={toggleCameraFacing}
               className="p-2 rounded-full bg-white/15 hover:bg-white/25 text-white ios-press"
@@ -429,7 +559,30 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
       {/* Main Viewport: Live Camera Feed or Active Page Preview */}
       <div className="relative flex-1 flex items-center justify-center bg-[#07070A] overflow-hidden">
-        {hasCamera ? (
+        {useNativeCamera ? (
+          capturedPages.length > 0 && capturedPages[selectedPageIndex] ? (
+            <img
+              src={capturedPages[selectedPageIndex].dataUrl}
+              alt={`Page ${selectedPageIndex + 1}`}
+              style={{ transform: `rotate(${capturedPages[selectedPageIndex].rotation || 0}deg)` }}
+              className="max-w-full max-h-full object-contain p-4 pb-28"
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center p-6 text-center max-w-sm">
+              <button
+                onClick={() => hdCameraInputRef.current?.click()}
+                className="ios-press w-24 h-24 rounded-full bg-[#5856D6] text-white flex items-center justify-center shadow-2xl mb-5"
+                aria-label="Open camera"
+              >
+                <Camera className="w-11 h-11" />
+              </button>
+              <h3 className="text-lg font-semibold mb-1">Scan with the iPhone camera</h3>
+              <p className="text-sm text-gray-400">
+                Full HD resolution with flash and focus. Tap the flash icon in the camera to turn it on. After each photo you come back here to add the next page.
+              </p>
+            </div>
+          )
+        ) : hasCamera ? (
           <div className="relative w-full h-full flex items-center justify-center">
             <video
               ref={videoRef}
@@ -565,6 +718,12 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           )}
         </AnimatePresence>
 
+        {isProcessingPhoto && (
+          <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50 text-white text-sm font-semibold">
+            Adding HD page…
+          </div>
+        )}
+
         {/* Multi-Page Strip Carousel Overlay */}
         {capturedPages.length > 0 && (
           <div className="absolute bottom-4 left-4 right-4 z-20 flex items-center gap-2 overflow-x-auto no-scrollbar p-2 bg-black/60 backdrop-blur-lg rounded-2xl border border-white/15">
@@ -618,6 +777,14 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
           accept="image/*,application/pdf"
           multiple
           onChange={handleFilesChosen}
+          className="hidden"
+        />
+        <input
+          ref={hdCameraInputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          onChange={handleHdCameraPhoto}
           className="hidden"
         />
         <button
