@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --ios-indigo: #5856D6;
+    --ios-orange: #FF9500;
+    --ios-bg: #F2F2F7;
+    --ios-card: #FFFFFF;
+    --ios-border: #E5E5EA;
+    --ios-subtext: #8E8E93;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+  }
+
+  .dark {
+    --ios-indigo: #7D7AFF;
+    --ios-bg: #000000;
+    --ios-card: #1C1C1E;
+    --ios-border: #2C2C2E;
+    --ios-subtext: #98989D;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+  }
+
+  html, body {
+    height: 100%;
+    height: 100dvh;
+    width: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: manipulation;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  #root {
+    height: 100%;
+    height: 100dvh;
+    width: 100%;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Prevent iOS automatic zoom on text inputs */
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}
+
+/* iOS Momentum Scrolling */
+.ios-scroll {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Hide scrollbars on mobile iOS style while keeping scroll functionality */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* iOS Spring & Press effects */
+.ios-press {
+  transition: transform 0.14s cubic-bezier(0.2, 0, 0, 1), opacity 0.14s ease;
+  will-change: transform;
+}
+.ios-press:active {
+  transform: scale(0.96);
+  opacity: 0.85;
+}
+
+.ios-press-subtle {
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+.ios-press-subtle:active {
+  transform: scale(0.98);
+  opacity: 0.9;
+}
+
+/* Safe area padding utilities */
+.pt-safe {
+  padding-top: max(env(safe-area-inset-top, 0px), 12px);
+}
+.pb-safe {
+  padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+}
+.pl-safe {
+  padding-left: env(safe-area-inset-left, 0px);
+}
+.pr-safe {
+  padding-right: env(safe-area-inset-right, 0px);
+}

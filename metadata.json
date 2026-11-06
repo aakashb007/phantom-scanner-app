@@ -1,0 +1,6 @@
+{
+  "name": "Phantom Scanner",
+  "description": "Private document scanner, PDF viewer and document organiser. Runs entirely offline in browser with zero server footprint.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
