@@ -1,18 +1,21 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Check, X, Sparkles, Maximize2, Crop } from 'lucide-react';
-import { Point, detectDocumentCorners, defaultCorners, warpPerspective } from '../utils/imageProcessing';
+import { Point, detectDocumentCorners, defaultCorners } from '../utils/imageProcessing';
 import { triggerHaptic } from '../utils/haptics';
 
 interface CornerCropEditorProps {
   imageDataUrl: string;
   onApply: (croppedDataUrl: string, corners: Point[]) => void;
   onCancel: () => void;
+  /** Start from these corners instead of auto-detecting. */
+  initialCorners?: Point[];
 }
 
 export const CornerCropEditor: React.FC<CornerCropEditorProps> = ({
   imageDataUrl,
   onApply,
   onCancel,
+  initialCorners,
 }) => {
   const [corners, setCorners] = useState<Point[]>(defaultCorners());
   const [activeCornerIdx, setActiveCornerIdx] = useState<number | null>(null);
@@ -24,8 +27,7 @@ export const CornerCropEditor: React.FC<CornerCropEditorProps> = ({
   // Auto detect corners when image loads
   const handleImageLoad = () => {
     if (imageRef.current) {
-      const detected = detectDocumentCorners(imageRef.current);
-      setCorners(detected);
+      setCorners(initialCorners && initialCorners.length === 4 ? initialCorners : detectDocumentCorners(imageRef.current));
       setImageLoaded(true);
     }
   };
@@ -87,9 +89,8 @@ export const CornerCropEditor: React.FC<CornerCropEditorProps> = ({
   const handleApply = () => {
     if (!imageRef.current) return;
     triggerHaptic('success');
-    const warped = warpPerspective(imageRef.current, corners);
-    const croppedUrl = warped.toDataURL('image/jpeg', 0.92);
-    onApply(croppedUrl, corners);
+    // The scanner re-renders the page in full HD from the original photo with these corners.
+    onApply('', corners);
   };
 
   // SVG polygon points string in percentage

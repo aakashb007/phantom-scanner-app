@@ -37,6 +37,9 @@ import {
   Folder,
   X,
 } from 'lucide-react';
+import { ZoomablePage } from './ZoomablePage';
+import { runBackgroundOcr } from '../utils/tesseractOcr';
+import { autoScanFile } from '../utils/autoScan';
 import { motion, AnimatePresence } from 'motion/react';
 import { DocumentRecord, DocumentPage } from '../types/document';
 import { triggerHaptic } from '../utils/haptics';
@@ -309,34 +312,28 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
   };
 
   // PAGE TOOL: Add Pages (File Import or Camera)
-  const handleAppendFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    Array.from(files).forEach((file, fIdx) => {
-      const reader = new FileReader();
-      reader.onload = async (ev) => {
-        const dataUrl = ev.target?.result as string;
-        if (dataUrl) {
-          const newPage: DocumentPage = {
-            id: crypto.randomUUID(),
-            dataUrl,
-            rotation: 0,
-            label: `Page ${doc.pages.length + fIdx + 1}`,
-          };
-          const nextPages = [...doc.pages, newPage];
-          const updated = await updateDocument(doc.docId, { pages: nextPages });
-          if (updated) {
-            setDoc(updated);
-            onDocumentUpdated(updated);
-            changePage(nextPages.length - 1);
-            showToast('Page added to document');
-          }
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+  const handleAppendFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []).filter((f) => f.type.startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name));
     e.target.value = '';
+    if (!files.length) return;
+    showToast('Scanning in HD…');
+    let pages = [...doc.pages];
+    for (const file of files) {
+      try {
+        const dataUrl = await autoScanFile(file); // auto crop + flatten + HD clean-up
+        pages = [...pages, { id: crypto.randomUUID(), dataUrl, rotation: 0, label: `Page ${pages.length + 1}`, filter: 'auto' } as DocumentPage];
+      } catch (err) {
+        console.warn('Add page failed', err);
+      }
+    }
+    const updated = await updateDocument(doc.docId, { pages });
+    if (updated) {
+      setDoc(updated);
+      onDocumentUpdated(updated);
+      changePage(pages.length - 1);
+      showToast(files.length > 1 ? `${files.length} pages added` : 'Page added');
+      runBackgroundOcr(updated.docId, (d) => onDocumentUpdated(d), false);
+    }
   };
 
   // TOOLBAR: Listen (Web Speech API speechSynthesis, offline)
@@ -871,36 +868,29 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
         )}
 
         {/* Center Swipeable Canvas Container */}
-        <div
-          onTouchStart={handleTouchStart}
-          onTouchMove={handleTouchMove}
-          onTouchEnd={handleTouchEnd}
-          className="flex-1 relative flex items-center justify-center p-3 sm:p-6 overflow-hidden bg-[#E5E5EA]/40 dark:bg-[#121214] touch-none"
-        >
+        <div className="flex-1 relative flex items-center justify-center overflow-hidden bg-[#E5E5EA]/40 dark:bg-[#121214] touch-none">
           {/* Centered "2 / 5" Page Counter Badge */}
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 bg-black/60 backdrop-blur-md text-white text-xs font-semibold px-3 py-1 rounded-full shadow-lg border border-white/10 pointer-events-none">
             {activePageIndex + 1} / {doc.pages.length}
           </div>
 
-          {/* Active Large Page Canvas */}
+          {/* Active page: pinch / double-tap / drag zoom, stays sharp */}
           {activePage ? (
-            <div
-              className="relative max-w-full max-h-full flex items-center justify-center transition-transform duration-100 ease-out"
-              style={{
-                transform: `scale(${zoomLevel}) translate(${panPos.x}px, ${panPos.y}px)`,
+            <ZoomablePage
+              src={activePage.dataUrl}
+              alt={activePage.label || `Page ${activePageIndex + 1}`}
+              rotation={activePage.rotation || 0}
+              resetKey={`${activePageIndex}-${activePage.id}`}
+              padding={isDesktop ? 24 : 12}
+              onSwipe={(dir) => {
+                if (dir === 'next' && activePageIndex < doc.pages.length - 1) changePage(activePageIndex + 1);
+                if (dir === 'prev' && activePageIndex > 0) changePage(activePageIndex - 1);
               }}
-            >
-              <img
-                src={activePage.dataUrl}
-                alt={activePage.label || `Page ${activePageIndex + 1}`}
-                style={{
-                  transform: `rotate(${activePage.rotation || 0}deg)`,
-                  maxHeight: 'calc(100vh - 220px)',
-                  maxWidth: 'calc(100vw - 32px)',
-                }}
-                className="rounded-lg shadow-2xl object-contain bg-white dark:bg-[#1C1C1E] border border-black/10 dark:border-white/10"
-              />
-            </div>
+              onEdgeBack={() => {
+                triggerHaptic('light');
+                onClose();
+              }}
+            />
           ) : (
             <div className="text-gray-400 text-sm">No page selected</div>
           )}
@@ -929,33 +919,6 @@ export const DocumentViewer: React.FC<DocumentViewerProps> = ({
             </>
           )}
 
-          {/* Zoom Level Controls (Desktop and mobile floating) */}
-          <div className="absolute bottom-4 right-4 flex items-center gap-1 bg-white/80 dark:bg-[#2C2C2E]/80 backdrop-blur-md rounded-full shadow-lg border border-black/10 dark:border-white/10 p-1 z-20">
-            <button
-              onClick={() => setZoomLevel((z) => Math.max(1, z - 0.5))}
-              className="p-1.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 ios-press"
-              title="Zoom Out"
-            >
-              <ZoomOut className="w-4 h-4 text-gray-700 dark:text-gray-200" />
-            </button>
-            <button
-              onClick={() => {
-                setZoomLevel(1);
-                setPanPos({ x: 0, y: 0 });
-              }}
-              className="px-2 py-0.5 text-[11px] font-semibold text-gray-700 dark:text-gray-200"
-              title="Reset Zoom"
-            >
-              {Math.round(zoomLevel * 100)}%
-            </button>
-            <button
-              onClick={() => setZoomLevel((z) => Math.min(5, z + 0.5))}
-              className="p-1.5 rounded-full hover:bg-black/10 dark:hover:bg-white/10 ios-press"
-              title="Zoom In"
-            >
-              <ZoomIn className="w-4 h-4 text-gray-700 dark:text-gray-200" />
-            </button>
-          </div>
         </div>
       </div>
 

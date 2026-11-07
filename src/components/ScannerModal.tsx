@@ -32,6 +32,7 @@ import {
 } from '../utils/imageProcessing';
 import { CornerCropEditor } from './CornerCropEditor';
 import { runBackgroundOcr } from '../utils/tesseractOcr';
+import { detectDocument, renderPage, AutoFilter } from '../utils/autoScan';
 
 interface ScannerModalProps {
   isOpen: boolean;
@@ -243,89 +244,69 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
     }
   };
 
-  const addCanvasAsPage = (canvas: HTMLCanvasElement) => {
+  /** Load an image (data URL) into an <img>. */
+  const loadImg = (url: string) =>
+    new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error('Could not load image'));
+      i.src = url;
+    });
 
-    // 1. Detect corners
-    const detectedCorners = detectDocumentCorners(canvas);
+  /**
+   * One tap = a finished scan: find the page, crop it, flatten it and clean it up in HD.
+   * The untouched photo is kept (until saving) so the page can be re-cropped or re-filtered.
+   */
+  const addCanvasAsPage = async (canvas: HTMLCanvasElement) => {
+    setIsProcessingPhoto(true);
+    await new Promise((r) => setTimeout(r, 30)); // let the "processing" overlay paint
+    try {
+      const originalDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+      const { corners, found } = detectDocument(canvas);
+      const page = renderPage(canvas, corners, 'auto');
+      const quality = analyzeScanQuality(page, found ? undefined : corners);
+      const target = rescanTargetIndex;
 
-    // 2. Scan check: check quality (blurry, too dark, cut off)
-    const quality = analyzeScanQuality(canvas, detectedCorners);
-
-    const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
-
-    const pageIdxToUse = rescanTargetIndex !== null ? rescanTargetIndex : capturedPages.length;
-
-    const newPage: DocumentPage = {
-      id: crypto.randomUUID(),
-      dataUrl,
-      rotation: 0,
-      aspectRatio: canvas.width / canvas.height,
-      label: `Page ${pageIdxToUse + 1}`,
-      ocrText: generateDefaultOcrText(docName || 'Document', category, pageIdxToUse + 1),
-      scanWarning: quality.warning,
-      corners: detectedCorners,
-      filter: 'original',
-    };
-
-    if (rescanTargetIndex !== null) {
-      // Replace existing flagged page
       setCapturedPages((prev) => {
+        const idx = target !== null ? target : prev.length;
+        const newPage: DocumentPage = {
+          id: crypto.randomUUID(),
+          dataUrl: page.toDataURL('image/jpeg', 0.9),
+          originalDataUrl,
+          rotation: 0,
+          aspectRatio: page.width / page.height,
+          label: `Page ${idx + 1}`,
+          ocrText: '',
+          scanWarning: quality.warning,
+          corners,
+          filter: 'auto',
+        };
         const next = [...prev];
-        next[rescanTargetIndex] = newPage;
+        if (target !== null) next[target] = newPage;
+        else next.push(newPage);
+        setSelectedPageIndex(idx);
         return next;
       });
-      setSelectedPageIndex(rescanTargetIndex);
       setRescanTargetIndex(null);
-    } else {
-      // Append as new page
-      setCapturedPages((prev) => [...prev, newPage]);
-      setSelectedPageIndex(capturedPages.length);
+      triggerHaptic('success');
+    } finally {
+      setIsProcessingPhoto(false);
     }
   };
 
   // Import files from device gallery
-  const handleFilesChosen = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-
-    Array.from(files).forEach((file, idx) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const result = event.target?.result as string;
-        if (result) {
-          const img = new Image();
-          img.onload = () => {
-            const detected = detectDocumentCorners(img);
-            const canvas = document.createElement('canvas');
-            canvas.width = img.width;
-            canvas.height = img.height;
-            const cCtx = canvas.getContext('2d');
-            if (cCtx) cCtx.drawImage(img, 0, 0);
-
-            const quality = analyzeScanQuality(canvas, detected);
-
-            const newPage: DocumentPage = {
-              id: crypto.randomUUID(),
-              dataUrl: result,
-              rotation: 0,
-              label: file.name.substring(0, 20),
-              ocrText: generateDefaultOcrText(
-                file.name.replace(/\.[^/.]+$/, ''),
-                category,
-                idx + 1
-              ),
-              corners: detected,
-              scanWarning: quality.warning,
-              filter: 'original',
-            };
-            setCapturedPages((prev) => [...prev, newPage]);
-          };
-          img.src = result;
-        }
-      };
-      reader.readAsDataURL(file);
-    });
+  const handleFilesChosen = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []).filter(
+      (f) => f.type.startsWith('image/') || /\.(jpe?g|png|heic|webp)$/i.test(f.name)
+    );
     e.target.value = '';
+    for (const file of files) {
+      try {
+        await addCanvasAsPage(await fileToScanCanvas(file));
+      } catch (err) {
+        console.warn('Import failed', err);
+      }
+    }
   };
 
   const toggleCameraFacing = () => {
@@ -353,29 +334,31 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   };
 
   // Apply Filter to selected page
-  const handleApplyFilter = (filter: ScanFilter) => {
+  const handleApplyFilter = async (filter: AutoFilter) => {
     triggerHaptic('light');
-    const targetPage = capturedPages[selectedPageIndex];
-    if (!targetPage) return;
-
-    const img = new Image();
-    img.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = img.naturalWidth || img.width;
-      canvas.height = img.naturalHeight || img.height;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(img, 0, 0);
-        const filteredCanvas = applyScanFilter(canvas, filter);
-        const newUrl = filteredCanvas.toDataURL('image/jpeg', 0.92);
-
-        setCapturedPages((prev) =>
-          prev.map((p, i) => (i === selectedPageIndex ? { ...p, dataUrl: newUrl, filter } : p))
-        );
-      }
-    };
-    img.src = targetPage.dataUrl;
     setShowFilterPicker(false);
+    const target = capturedPages[selectedPageIndex];
+    if (!target) return;
+    const index = selectedPageIndex;
+    setIsProcessingPhoto(true);
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      const src = await loadImg(target.originalDataUrl || target.dataUrl);
+      const corners =
+        target.originalDataUrl && target.corners
+          ? target.corners
+          : [
+              { x: 0, y: 0 },
+              { x: 1, y: 0 },
+              { x: 1, y: 1 },
+              { x: 0, y: 1 },
+            ];
+      const out = renderPage(src, corners, filter);
+      const newUrl = out.toDataURL('image/jpeg', 0.9);
+      setCapturedPages((prev) => prev.map((p, i) => (i === index ? { ...p, dataUrl: newUrl, filter } : p)));
+    } finally {
+      setIsProcessingPhoto(false);
+    }
   };
 
   // Rescan specific page
@@ -385,24 +368,31 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
   };
 
   // Apply corner adjustment and perspective warp
-  const handleApplyCrop = (croppedUrl: string, corners: Point[]) => {
+  const handleApplyCrop = async (_croppedUrl: string, corners: Point[]) => {
     if (croppingPageIndex === null) return;
-    setCapturedPages((prev) =>
-      prev.map((p, i) =>
-        i === croppingPageIndex
-          ? {
-              ...p,
-              dataUrl: croppedUrl,
-              corners,
-              scanWarning: null, // cleared after manual warp
-            }
-          : p
-      )
-    );
+    const index = croppingPageIndex;
+    const target = capturedPages[index];
     setCroppingPageIndex(null);
+    if (!target) return;
+    setIsProcessingPhoto(true);
+    await new Promise((r) => setTimeout(r, 30));
+    try {
+      const src = await loadImg(target.originalDataUrl || target.dataUrl);
+      const filter = (target.filter && target.filter !== 'enhanced' ? target.filter : 'auto') as AutoFilter;
+      const out = renderPage(src, corners, filter);
+      const dataUrl = out.toDataURL('image/jpeg', 0.9);
+      setCapturedPages((prev) =>
+        prev.map((p, i) =>
+          i === index
+            ? { ...p, dataUrl, corners, originalDataUrl: target.originalDataUrl || target.dataUrl, scanWarning: null }
+            : p
+        )
+      );
+    } finally {
+      setIsProcessingPhoto(false);
+    }
   };
 
-  // Save document and initiate background OCR
   const handleSave = async () => {
     if (capturedPages.length === 0) return;
     triggerHaptic('success');
@@ -416,7 +406,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       vault: isVault,
       created: Date.now(),
       lastChanged: Date.now(),
-      pages: capturedPages,
+      pages: capturedPages.map(({ originalDataUrl, ...p }) => p),
     };
 
     await saveDocument(newDoc);
@@ -690,29 +680,20 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
               className="absolute top-16 right-4 z-30 bg-[#1C1C1E]/95 backdrop-blur-xl rounded-2xl p-2 border border-white/15 shadow-2xl flex flex-col gap-1 text-xs"
             >
               <button
-                onClick={() => handleApplyFilter('original')}
-                className="px-3 py-1.5 rounded-lg text-left hover:bg-white/15"
-              >
-                Original Photo
-              </button>
-              <button
-                onClick={() => handleApplyFilter('clean')}
+                onClick={() => handleApplyFilter('auto')}
                 className="px-3 py-1.5 rounded-lg text-left hover:bg-[#5856D6] font-semibold text-white flex items-center gap-1.5"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                <span>Clean Scan (B&W)</span>
+                <span>Auto Scan (HD colour)</span>
               </button>
-              <button
-                onClick={() => handleApplyFilter('grayscale')}
-                className="px-3 py-1.5 rounded-lg text-left hover:bg-white/15"
-              >
+              <button onClick={() => handleApplyFilter('clean')} className="px-3 py-1.5 rounded-lg text-left hover:bg-white/15">
+                Black &amp; White
+              </button>
+              <button onClick={() => handleApplyFilter('grayscale')} className="px-3 py-1.5 rounded-lg text-left hover:bg-white/15">
                 Grayscale
               </button>
-              <button
-                onClick={() => handleApplyFilter('enhanced')}
-                className="px-3 py-1.5 rounded-lg text-left hover:bg-white/15"
-              >
-                Enhanced Color
+              <button onClick={() => handleApplyFilter('original')} className="px-3 py-1.5 rounded-lg text-left hover:bg-white/15">
+                Original Photo (cropped)
               </button>
             </motion.div>
           )}
@@ -720,7 +701,7 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
 
         {isProcessingPhoto && (
           <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/50 text-white text-sm font-semibold">
-            Adding HD page…
+            Scanning in HD…
           </div>
         )}
 
@@ -825,7 +806,8 @@ export const ScannerModal: React.FC<ScannerModalProps> = ({
       {/* Interactive Corner Crop & Perspective Correction Modal */}
       {croppingPageIndex !== null && capturedPages[croppingPageIndex] && (
         <CornerCropEditor
-          imageDataUrl={capturedPages[croppingPageIndex].dataUrl}
+          imageDataUrl={capturedPages[croppingPageIndex].originalDataUrl || capturedPages[croppingPageIndex].dataUrl}
+          initialCorners={capturedPages[croppingPageIndex].originalDataUrl ? capturedPages[croppingPageIndex].corners : undefined}
           onApply={handleApplyCrop}
           onCancel={() => setCroppingPageIndex(null)}
         />

@@ -1,3 +1,4 @@
+import { detectDocument, warpDocument } from './autoScan';
 export interface Point {
   x: number;
   y: number;
@@ -15,6 +16,13 @@ export interface QualityCheckResult {
  * Returns 4 normalized coordinates [0..1]: [Top-Left, Top-Right, Bottom-Right, Bottom-Left]
  */
 export function detectDocumentCorners(
+  source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement
+): Point[] {
+  return detectDocument(source).corners;
+}
+
+/** Old simple detector (kept for reference, no longer used). */
+export function legacyDetectDocumentCorners(
   source: HTMLVideoElement | HTMLImageElement | HTMLCanvasElement
 ): Point[] {
   try {
@@ -141,7 +149,16 @@ export function defaultCorners(): Point[] {
  */
 export function warpPerspective(
   sourceImage: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement,
-  corners: Point[], // normalized 0..1 (TL, TR, BR, BL)
+  corners: Point[] // normalized 0..1 (TL, TR, BR, BL)
+): HTMLCanvasElement {
+  // True perspective correction at full resolution
+  return warpDocument(sourceImage, corners);
+}
+
+/** Old approximate warp (kept for reference, no longer used). */
+export function legacyWarpPerspective(
+  sourceImage: HTMLImageElement | HTMLCanvasElement | HTMLVideoElement,
+  corners: Point[],
   targetWidth = 1200,
   targetHeight = 1600
 ): HTMLCanvasElement {

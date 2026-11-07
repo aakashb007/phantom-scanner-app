@@ -18,7 +18,9 @@ export interface DocumentPage {
   ocrText?: string;
   ocrWords?: OcrWordBox[];
   scanWarning?: 'blurry' | 'too_dark' | 'cut_off' | null;
-  filter?: 'original' | 'clean' | 'grayscale' | 'enhanced';
+  filter?: 'auto' | 'original' | 'clean' | 'grayscale' | 'enhanced';
+  /** The untouched camera photo, kept only while scanning so the page can be re-cropped. Not saved. */
+  originalDataUrl?: string;
   corners?: { x: number; y: number }[]; // 4 points: TL, TR, BR, BL
 }
 
